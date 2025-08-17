@@ -1,0 +1,45 @@
+[Unit]
+Description=Framework LED Monitor Daemon
+Documentation=file:///home/rdilley/git/FrameWork_LED_Monitor/README.md
+After=graphical-session.target network.target
+Wants=graphical-session.target
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/ledmonitord
+ExecReload=/bin/kill -SIGUSR1 $MAINPID
+ExecStop=/bin/kill -TERM $MAINPID
+PIDFile=/var/run/led_monitor.pid
+Restart=always
+RestartSec=5
+TimeoutStartSec=10
+TimeoutStopSec=30
+
+# Security settings
+User=framework
+Group=dialout
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/var/run /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=1024
+MemoryMax=128M
+CPUQuota=25%
+
+# Device access
+DevicePolicy=closed
+DeviceAllow=/dev/ttyACM* rw
+DeviceAllow=char-usb_device rw
+
+[Install]
+WantedBy=graphical-session.target
+Also=led-monitor.timer

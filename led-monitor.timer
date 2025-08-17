@@ -1,0 +1,11 @@
+[Unit]
+Description=LED Monitor Watchdog Timer
+Requires=led-monitor.service
+
+[Timer]
+# Check service health every 30 seconds
+OnCalendar=*:*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
