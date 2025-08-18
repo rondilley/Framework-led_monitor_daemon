@@ -64,8 +64,4 @@ const led_statistics_t* get_statistics(void);
 void format_statistics_json(char* buffer, size_t buffer_size);
 void format_statistics_text(char* buffer, size_t buffer_size);
 
-// HTTP statistics server (if enabled)
-int start_stats_server(int port);
-void stop_stats_server(void);
-
 #endif // LED_STATS_H

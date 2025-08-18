@@ -281,7 +281,6 @@ enable_debug_logging = false
 
 [statistics]
 enable_statistics = true
-stats_port = 8080
 ```
 
 ### Runtime Configuration Reload

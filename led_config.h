@@ -69,7 +69,6 @@ typedef struct {
     
     // Statistics
     int enable_statistics;
-    int stats_port; // For HTTP endpoint
 } led_config_t;
 
 // Configuration management

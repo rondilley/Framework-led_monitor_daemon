@@ -926,10 +926,6 @@ int main(int argc, char* argv[]) {
     // Initialize statistics
     init_statistics();
     
-    // Start statistics server if enabled
-    if (global_config.enable_statistics) {
-        start_stats_server(global_config.stats_port);
-    }
     
     // Initialize drawing threads
     result = init_drawing_thread(&left_thread, global_config.left_device_path);
@@ -1041,10 +1037,6 @@ int main(int argc, char* argv[]) {
     
     if (cpu_values.values) {
         free(cpu_values.values);
-    }
-    
-    if (global_config.enable_statistics) {
-        stop_stats_server();
     }
 
 cleanup:

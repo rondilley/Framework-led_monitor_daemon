@@ -81,7 +81,6 @@ void init_default_config(led_config_t* config) {
     
     // Statistics
     config->enable_statistics = 0;
-    config->stats_port = 8080;
 }
 
 /****
@@ -184,8 +183,6 @@ static led_error_t parse_config_line(led_config_t* config, const char* line) {
     // Statistics
     else if (strcmp(key, "enable_statistics") == 0) {
         config->enable_statistics = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-    } else if (strcmp(key, "stats_port") == 0) {
-        config->stats_port = atoi(value);
     }
     
     return LED_SUCCESS;
@@ -349,7 +346,6 @@ led_error_t save_config(const led_config_t* config, const char* config_path) {
     
     fprintf(fp, "# Statistics\n");
     fprintf(fp, "enable_statistics = %s\n", config->enable_statistics ? "true" : "false");
-    fprintf(fp, "stats_port = %d\n", config->stats_port);
     
     fclose(fp);
     return LED_SUCCESS;
