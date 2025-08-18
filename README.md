@@ -22,7 +22,6 @@ https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
 - **Runtime statistics** and performance monitoring
 - **Signal-based configuration reload** (SIGUSR1, SIGHUP)
 - **Comprehensive error handling** with specific error codes
-- **PID file management** with process locking
 - **Security enhancements** with input validation
 - **Device testing tools** and status monitoring
 - **Systemd integration** with security hardening
@@ -57,8 +56,15 @@ make && ./ledmonitord --test-devices
 # Install daemon to /usr/local/bin
 sudo make install
 
-# Install and enable systemd service
-sudo make service
+# Create framework service account
+sudo useradd --system --no-create-home --gid dialout framework
+
+# Copy service file to systemd
+sudo cp led-monitor.service /etc/systemd/system/
+
+# Reload systemd and enable service
+sudo systemctl daemon-reload
+sudo systemctl enable led-monitor
 
 # Start the service
 sudo systemctl start led-monitor
@@ -66,6 +72,9 @@ sudo systemctl start led-monitor
 # Check service status
 sudo systemctl status led-monitor
 ```
+
+### Important Note on Systemd Security
+The service file has minimal security restrictions due to requirements of the daemon's double-fork daemonization process. The daemon runs as the `framework` user in the `dialout` group to maintain USB device access permissions.
 
 ### Configuration
 ```bash
@@ -115,8 +124,6 @@ sudo systemctl enable led-monitor
 
 # Reload configuration
 sudo systemctl reload led-monitor
-# or send signal directly:
-sudo kill -SIGUSR1 $(cat /var/run/led_monitor.pid)
 
 # View logs
 sudo journalctl -u led-monitor -f
@@ -267,7 +274,6 @@ right_device_path = 1-3.3
 
 [daemon]
 run_as_daemon = true
-pid_file_path = /var/run/led_monitor.pid
 
 [logging]
 log_level = info
@@ -281,8 +287,6 @@ stats_port = 8080
 ### Runtime Configuration Reload
 ```bash
 # Send reload signal to running daemon
-sudo kill -SIGUSR1 $(cat /var/run/led_monitor.pid)
-# or
 sudo systemctl reload led-monitor
 ```
 
@@ -297,7 +301,6 @@ sudo systemctl reload led-monitor
 - `led_config.h/c` - Configuration file management
 - `led_logging.h/c` - Enhanced logging system
 - `led_errors.h/c` - Error handling and codes
-- `led_pidfile.h/c` - PID file management
 - `led_stats.h/c` - Statistics and monitoring
 
 ### System Integration
@@ -360,7 +363,7 @@ sudo ./ledmonitord --foreground --debug
 # Daemon will report config errors at startup
 
 # Reload configuration without restart
-sudo kill -SIGUSR1 $(cat /var/run/led_monitor.pid)
+sudo systemctl reload led-monitor
 
 # Check current log level
 sudo journalctl -u led-monitor -f | grep "Log level"

@@ -78,7 +78,6 @@ void init_default_config(led_config_t* config) {
     
     // Runtime options
     config->run_as_daemon = 1;
-    strcpy(config->pid_file_path, "/var/run/led_monitor.pid");
     
     // Statistics
     config->enable_statistics = 0;
@@ -181,11 +180,7 @@ static led_error_t parse_config_line(led_config_t* config, const char* line) {
     } else if (strcmp(key, "max_frame_rate") == 0) {
         config->max_frame_rate = atoi(value);
     }
-    // Runtime options
-    else if (strcmp(key, "pid_file") == 0) {
-        strncpy(config->pid_file_path, value, sizeof(config->pid_file_path) - 1);
-        config->pid_file_path[sizeof(config->pid_file_path) - 1] = '\0';
-    }
+    // Runtime options - pid_file removed, no longer needed
     // Statistics
     else if (strcmp(key, "enable_statistics") == 0) {
         config->enable_statistics = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
@@ -351,8 +346,6 @@ led_error_t save_config(const led_config_t* config, const char* config_path) {
     fprintf(fp, "\n");
     
     fprintf(fp, "# Runtime options\n");
-    fprintf(fp, "pid_file = %s\n", config->pid_file_path);
-    fprintf(fp, "\n");
     
     fprintf(fp, "# Statistics\n");
     fprintf(fp, "enable_statistics = %s\n", config->enable_statistics ? "true" : "false");

@@ -3,9 +3,9 @@ CFLAGS = -Wall -Wextra -O2 -pthread -D_GNU_SOURCE
 LDFLAGS = -pthread -lm
 
 TARGET = ledmonitord
-SOURCES = ledmonitord.c system_monitor.c led_drawing.c serial_comm.c led_config.c led_logging.c led_errors.c led_pidfile.c led_stats.c
+SOURCES = ledmonitord.c system_monitor.c led_drawing.c serial_comm.c led_config.c led_logging.c led_errors.c led_stats.c
 OBJECTS = $(SOURCES:.c=.o)
-HEADERS = led_monitor.h led_config.h led_logging.h led_errors.h led_pidfile.h led_stats.h 
+HEADERS = led_monitor.h led_config.h led_logging.h led_errors.h led_stats.h 
 
 PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
@@ -45,20 +45,22 @@ install: $(TARGET)
 
 uninstall:
 	@echo "Stopping service if running..."
-	-systemctl stop led-monitor-daemon.service 2>/dev/null
-	-systemctl disable led-monitor-daemon.service 2>/dev/null
+	-systemctl stop led-monitor.service 2>/dev/null
+	-systemctl disable led-monitor.service 2>/dev/null
 	@echo "Removing daemon..."
 	rm -f $(BINDIR)/$(TARGET)
-	rm -f $(SYSTEMD_DIR)/led-monitor-daemon.service
+	rm -f $(SYSTEMD_DIR)/led-monitor.service
 	@echo "Uninstallation complete."
 
 service: install
+	@echo "Creating framework service account..."
+	-useradd --system --no-create-home --gid dialout framework 2>/dev/null || true
 	@echo "Installing systemd service..."
-	install -m 644 led-monitor-daemon.service $(SYSTEMD_DIR)/
+	install -m 644 led-monitor.service $(SYSTEMD_DIR)/
 	systemctl daemon-reload
-	systemctl enable led-monitor-daemon.service
+	systemctl enable led-monitor.service
 	@echo "Service installed and enabled."
-	@echo "Start it with: sudo systemctl start led-monitor-daemon"
+	@echo "Start it with: sudo systemctl start led-monitor"
 
 debug: CFLAGS += -g -DDEBUG
 debug: clean $(TARGET)

@@ -48,7 +48,6 @@
 #include "led_config.h"
 #include "led_logging.h"
 #include "led_errors.h"
-#include "led_pidfile.h"
 #include "led_stats.h"
 
 #define UPDATE_INTERVAL_MS 100
@@ -67,6 +66,7 @@ typedef struct {
 // Global state
 static volatile int daemon_running = 1;
 static volatile int config_reload_requested = 0;
+int verbose_logging = 0;
 static DrawingThread left_thread;
 static DrawingThread right_thread;
 static led_config_t global_config;
@@ -819,6 +819,7 @@ int main(int argc, char* argv[]) {
     led_error_t result;
     const char* config_file = NULL;
     int foreground_mode = 0;
+    int verbose_mode = 0;
     int show_stats = 0;
     int test_devices = 0;
     
@@ -834,7 +835,7 @@ int main(int argc, char* argv[]) {
                 return EXIT_FAILURE;
             }
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
-            // Will be handled after config loading
+            verbose_mode = 1;
         } else if (strcmp(argv[i], "--debug") == 0 || strcmp(argv[i], "-d") == 0) {
             // Will be handled after config loading
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -866,6 +867,9 @@ int main(int argc, char* argv[]) {
     // Override config with command line options
     if (foreground_mode) {
         global_config.run_as_daemon = 0;
+    }
+    if (verbose_mode) {
+        verbose_logging = 1;
     }
     
     // Handle special modes
@@ -899,15 +903,6 @@ int main(int argc, char* argv[]) {
         return EXIT_SUCCESS;
     }
     
-    // Check if daemon is already running (if we're supposed to run as daemon)
-    if (global_config.run_as_daemon) {
-        result = check_pid_file(global_config.pid_file_path);
-        if (result == LED_SUCCESS) {
-            LOG_ERROR("Daemon is already running");
-            return EXIT_FAILURE;
-        }
-    }
-    
     // Daemonize if requested
     if (global_config.run_as_daemon) {
         result = daemonize();
@@ -918,13 +913,6 @@ int main(int argc, char* argv[]) {
         
         // Re-initialize logging after daemonization
         init_logging(global_config.log_level, global_config.enable_debug_logging, 0);
-        
-        // Create PID file
-        result = create_pid_file(global_config.pid_file_path);
-        if (result != LED_SUCCESS) {
-            LOG_ERROR("Failed to create PID file: %s", led_error_string(result));
-            return EXIT_FAILURE;
-        }
     }
     
     // Set up signal handlers
@@ -1060,9 +1048,6 @@ int main(int argc, char* argv[]) {
     }
 
 cleanup:
-    if (global_config.run_as_daemon) {
-        remove_pid_file(global_config.pid_file_path);
-    }
     
     LOG_INFO("LED Monitor Daemon stopped.");
     closelog();

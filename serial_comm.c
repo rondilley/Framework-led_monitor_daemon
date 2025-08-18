@@ -23,7 +23,7 @@
 #include <errno.h>
 #include "led_monitor.h"
 
-#define DEBUG_LOGGING 1
+// Verbose logging controlled by command line --verbose flag
 
 typedef enum {
     CMD_BRIGHTNESS  = 0x00,
@@ -126,7 +126,7 @@ void send_command(int fd, unsigned char command, unsigned char* params, int para
  *
  * SIDE EFFECTS:
  *   - Modifies LED module display state
- *   - Logs frame statistics every 50 frames when DEBUG_LOGGING enabled
+ *   - Logs frame statistics every 50 frames when verbose logging enabled
  *   - Increments internal frame counter for debugging
  *
  * SECURITY FEATURES:
@@ -153,7 +153,7 @@ void draw_to_leds(int fd, LEDGrid* grid) {
         }
     }
     
-    if (DEBUG_LOGGING && (frame_count % 50 == 0)) {
+    if (verbose_logging && (frame_count % 50 == 0)) {
         syslog(LOG_INFO, "Frame %d: Drawing grid with %d non-zero pixels", frame_count, non_zero_pixels);
     }
     

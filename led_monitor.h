@@ -55,6 +55,9 @@ typedef struct {
     float download_percent;
 } NetworkValues;
 
+// Global verbose logging flag
+extern int verbose_logging;
+
 // System monitoring functions
 void get_cpu_values(CPUValues* cpu);
 void get_memory_values(MemoryValues* mem);

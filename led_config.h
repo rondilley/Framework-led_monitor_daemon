@@ -66,7 +66,6 @@ typedef struct {
     
     // Runtime options
     int run_as_daemon;
-    char pid_file_path[256];
     
     // Statistics
     int enable_statistics;
