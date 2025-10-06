@@ -155,19 +155,40 @@ The Framework LED matrices display real-time system metrics using a carefully de
 ```
      Left LED Matrix (9×34)
      USB Port: 1-4.2
-    ┌─────────────────────────────────────┐
-  1 │ ████ ████ ████ ████ ████ ████ ████ │ CPU Core Usage
-  2 │ ████ ████ ████ ████ ████ ████ ████ │ (up to 8 cores)
-  3 │ ████ ████ ████ ████ ████ ████ ████ │ Each bar = 1 core
-  4 │ ████ ████ ████ ████ ████ ████ ████ │ Height = % usage
-    │─────────────────────────────────────│
-  5 │ ██████████████████████████████████  │ Memory Usage Bar
-  6 │ ██████████████████████████████████  │ Width = % of total RAM
-    │─────────────────────────────────────│
-  7 │ ████  ████  ⚡⚡⚡  ████  ████ │ Battery Level
-  8 │ ████  ████  ⚡⚡⚡  ████  ████ │ ⚡ = charging
-  9 │ ████  ████  ████  ████  ████  ████ │ Segments = % charge
-    └─────────────────────────────────────┘
+  0 ┌───────────────┐
+  1 │ x x x | x x x | CPU Core Usage
+  2 │ x x x | x x x | (up to 8 cores)
+  3 │ x x x | x x x | Each bar = 1 core
+  4 │───────|───────| Height = % usage
+  5 │ x x x | x x x |
+  6 │ x x x | x x x |
+  7 │ x x x | x x x |
+  8 │───────|───────|
+  9 │ x x x | x x x |
+ 10 │ x x x | x x x |
+ 11 │ x x x | x x x |
+ 12 │───────|───────|
+ 13 │ x x x | x x x |
+ 14 │ x x x | x x x |
+ 15 │ x x x | x x x |
+ 16 │───────────────│
+ 17 │ x x x x x x x │ Memory Usage Bar
+ 18 │ x x x x x x x │ Width = % of total RAM
+ 10 │───────────────│
+ 20 │ x x x x x x x │ Battery Level
+ 21 │ x x x x x x x │ 
+ 22 │ x x x x x x x │ ⚡ = charging
+ 23 │ x x x x x x x │ Segments = % charge
+ 24 │ x x x x x x x │ 
+ 25 │ x x x x x x x │ 
+ 26 │ x x x x x x x │ 
+ 27 │ x x x x x x x │ 
+ 28 │ x x x x x x x │ 
+ 29 │ x x x x x x x │ 
+ 30 │ x x x x x x x │ 
+ 31 │ x x x x x x x │ 
+ 32 │ x x x x x x x │ 
+ 33 └───────────────┘
 ```
 
 ### Right Matrix Layout
@@ -175,22 +196,41 @@ The Framework LED matrices display real-time system metrics using a carefully de
 ```
      Right LED Matrix (9×34)
      USB Port: 1-3.3
-    ┌─────────────────────────────────────┐
-  1 │ ███     ███      ███     ███        │ Disk Read Activity
-  2 │ ███     ███      ███     ███        │ (columns 1-3)
-  3 │ ███     ███      ███     ███        │
-  4 │ ███     ███      ███     ███        │
-    │─────────────────────────────────────│
-  5 │ ███     ███      ███     ███        │ Disk Write Activity
-  6 │ ███     ███      ███     ███        │ (columns 1-3)
-  7 │ ███     ███      ███     ███        │
-    │─────────────────────────────────────│
-  8 │ ███     ███      ███     ███        │ Network Upload
-  9 │ ███     ███      ███     ███        │ (columns 5-7)
-    │                                     │
-    │        Network Download             │
-    │        (columns 5-7)                │
-    └─────────────────────────────────────┘
+  0 ┌───────────────┐
+  1 │ x x x | x x x | Disk Usage
+  2 │ x x x | x x x | Left column = Read
+  3 │ x x x | x x x | Right column = Write
+  4 │ x x x | x x x | Height = % usage
+  5 │ x x x | x x x |
+  6 │ x x x | x x x |
+  7 │ x x x | x x x |
+  8 │ x x x | x x x |
+  9 │ x x x | x x x |
+ 10 │ x x x | x x x |
+ 11 │ x x x | x x x |
+ 12 │ x x x | x x x |
+ 13 │ x x x | x x x |
+ 14 │ x x x | x x x |
+ 15 │ x x x | x x x |
+ 16 │ x x x | x x x |
+ 17 │───────────────│
+ 18 │ x x x | x x x │ Network Usage
+ 19 │ x x x | x x x │ Left column = Upload
+ 10 │ x x x | x x x │ Right column = Download
+ 21 │ x x x | x x x │ Height = % usage
+ 22 │ x x x | x x x │ 
+ 23 │ x x x | x x x │ 
+ 24 │ x x x | x x x │ 
+ 25 │ x x x | x x x │ 
+ 26 │ x x x | x x x │ 
+ 27 │ x x x | x x x │ 
+ 28 │ x x x | x x x │ 
+ 29 │ x x x | x x x │ 
+ 30 │ x x x | x x x │ 
+ 31 │ x x x | x x x │ 
+ 32 │ x x x | x x x │ 
+ 33 │ x x x | x x x │ 
+ 34 └───────────────┘
 ```
 
 ### Visualization Details
@@ -390,5 +430,6 @@ This C implementation is based on the original Python version by Jeremy Karstrom
 - **Original Project**: https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
 - **Author**: Jeremy Karstrom
 - **License**: Same license as original implementation
+
 
 The core visualization algorithms, LED matrix layout, and system monitoring concepts are derived from the original Python codebase, with significant performance optimizations and enterprise features added in this C implementation.
