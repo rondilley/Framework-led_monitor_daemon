@@ -212,12 +212,12 @@ The Framework LED matrices display real-time system metrics using a carefully de
  13 │ x x x | x x x |
  14 │ x x x | x x x |
  15 │ x x x | x x x |
- 16 │ x x x | x x x |
- 17 │───────────────│
- 18 │ x x x | x x x │ Network Usage
- 19 │ x x x | x x x │ Left column = Upload
- 10 │ x x x | x x x │ Right column = Download
- 21 │ x x x | x x x │ Height = % usage
+ 16 │───────────────|
+ 17 │ x x x | x x x │ Network Usage
+ 18 │ x x x | x x x │ Left column = Upload
+ 19 │ x x x | x x x │ Right column = Download
+ 20 │ x x x | x x x │ Height = % usage
+ 21 │ x x x | x x x │ 
  22 │ x x x | x x x │ 
  23 │ x x x | x x x │ 
  24 │ x x x | x x x │ 
@@ -229,8 +229,7 @@ The Framework LED matrices display real-time system metrics using a carefully de
  30 │ x x x | x x x │ 
  31 │ x x x | x x x │ 
  32 │ x x x | x x x │ 
- 33 │ x x x | x x x │ 
- 34 └───────────────┘
+ 33 └───────────────┘
 ```
 
 ### Visualization Details
@@ -433,3 +432,4 @@ This C implementation is based on the original Python version by Jeremy Karstrom
 
 
 The core visualization algorithms, LED matrix layout, and system monitoring concepts are derived from the original Python codebase, with significant performance optimizations and enterprise features added in this C implementation.
+
