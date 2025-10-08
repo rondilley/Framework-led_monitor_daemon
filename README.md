@@ -48,6 +48,22 @@ make clean
 
 # Build and test
 make && ./ledmonitord --test-devices
+
+# Check serial device permissions
+make check-serial
+```
+
+### Serial Device Permissions
+
+When you run `make`, it will automatically check the permissions for `/dev/ttyACM0` and inform you which group owns the device (typically `dialout`). The check will:
+- Identify the group that owns the serial device
+- Provide the exact command to add your user to that group
+- Show whether your current user is already in the required group
+
+If you see that you're not in the required group, follow the instructions provided to add yourself:
+```bash
+sudo usermod -a -G dialout $USER
+# Then logout and login again for changes to take effect
 ```
 
 ## Installation
@@ -327,9 +343,15 @@ sudo systemctl reload led-monitor
 
 ### Permission Issues
 ```bash
-# Add user to dialout group
+# Check which group owns the serial device
+make check-serial
+
+# Add user to the group (typically dialout)
 sudo usermod -a -G dialout $USER
 # Log out and back in for changes to take effect
+
+# Verify group membership
+groups
 ```
 
 ### Device Not Found
