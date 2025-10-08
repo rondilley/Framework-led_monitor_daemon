@@ -11,12 +11,41 @@ PREFIX = /usr/local
 BINDIR = $(PREFIX)/bin
 SYSTEMD_DIR = /etc/systemd/system
 
-.PHONY: all clean install uninstall service
+.PHONY: all clean install uninstall service check-serial
 
-all: $(TARGET)
+all: $(TARGET) check-serial
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+
+check-serial:
+	@echo ""
+	@echo "========================================="
+	@echo "Checking serial device permissions..."
+	@if [ -e /dev/ttyACM0 ]; then \
+		GROUP=$$(stat -c %G /dev/ttyACM0 2>/dev/null || stat -f %Sg /dev/ttyACM0 2>/dev/null); \
+		echo "Found /dev/ttyACM0 owned by group: $$GROUP"; \
+		echo ""; \
+		echo "To access the LED modules, the user running the daemon"; \
+		echo "must be a member of the '$$GROUP' group."; \
+		echo ""; \
+		echo "Add your user to the group with:"; \
+		echo "  sudo usermod -a -G $$GROUP $$USER"; \
+		echo "Then logout and login again for changes to take effect."; \
+		echo ""; \
+		echo "Current user groups: $$(id -nG)"; \
+		if id -nG | grep -q "$$GROUP"; then \
+			echo "Current user is in the $$GROUP group"; \
+		else \
+			echo "Current user is NOT in the $$GROUP group"; \
+		fi; \
+	else \
+		echo "Note: /dev/ttyACM0 not found."; \
+		echo "LED modules may not be connected or may use a different device."; \
+		echo "Check /dev/serial/by-id/ for Framework devices."; \
+	fi
+	@echo "========================================="
+	@echo ""
 
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
