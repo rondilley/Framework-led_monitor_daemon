@@ -2,7 +2,7 @@
 
 A high-performance C implementation of the Framework LED system monitor daemon with enterprise-grade features. This daemon displays real-time system metrics on Framework Laptop 16 LED input modules.
 
-**Based on the original Python implementation by Jeremy Karstrom:**  
+**Based on the original Python implementation by Jeremy Karst:**  
 https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
 
 ## Features
