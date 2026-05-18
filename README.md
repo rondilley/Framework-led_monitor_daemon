@@ -9,7 +9,7 @@ https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
 
 - **Multi-threaded architecture** for independent LED matrix control
 - **Real-time system monitoring**:
-  - CPU usage per core
+  - CPU usage per physical core, with automatic layout switching for 1–12 cores (SMT siblings are folded into their physical cores via `/sys/devices/system/cpu/.../topology`)
   - Memory utilization
   - Battery status and charging state
   - Disk I/O (read/write)
@@ -168,14 +168,25 @@ The Framework LED matrices display real-time system metrics using a carefully de
 
 ### Left Matrix Layout
 
+The left matrix has two layouts. The daemon picks one automatically at runtime based on the physical-core count reported by `/sys/devices/system/cpu/.../topology`:
+
+| Physical cores | Layout   | CPU section | Memory  | Battery |
+|----------------|----------|-------------|---------|---------|
+| 1 – 8          | Classic  | rows 1–15   | rows 17–18 | rows 20–32 (13 wide, full bolt) |
+| 9 – 12         | Extended | rows 1–23   | rows 25–26 | rows 28–32 (5 wide, compact bolt) |
+
+Cores beyond 12 are not rendered; SMT siblings are merged into their physical core.
+
+#### Classic Layout (≤8 physical cores)
+
 ```
      Left LED Matrix (9×34)
      USB Port: 1-4.2
   0 ┌───────────────┐
   1 │ x x x | x x x | CPU Core Usage
-  2 │ x x x | x x x | (up to 8 cores)
-  3 │ x x x | x x x | Each bar = 1 core
-  4 │───────|───────| Height = % usage
+  2 │ x x x | x x x | (up to 8 cores, 2×4 grid of 3×3 cells)
+  3 │ x x x | x x x | Each cell = 1 physical core
+  4 │───────|───────| Fill = % usage (spiral pattern)
   5 │ x x x | x x x |
   6 │ x x x | x x x |
   7 │ x x x | x x x |
@@ -190,20 +201,63 @@ The Framework LED matrices display real-time system metrics using a carefully de
  16 │───────────────│
  17 │ x x x x x x x │ Memory Usage Bar
  18 │ x x x x x x x │ Width = % of total RAM
- 10 │───────────────│
+ 19 │───────────────│
  20 │ x x x x x x x │ Battery Level
- 21 │ x x x x x x x │ 
- 22 │ x x x x x x x │ ⚡ = charging
- 23 │ x x x x x x x │ Segments = % charge
- 24 │ x x x x x x x │ 
- 25 │ x x x x x x x │ 
- 26 │ x x x x x x x │ 
- 27 │ x x x x x x x │ 
- 28 │ x x x x x x x │ 
- 29 │ x x x x x x x │ 
- 30 │ x x x x x x x │ 
- 31 │ x x x x x x x │ 
- 32 │ x x x x x x x │ 
+ 21 │ x x x x x x x │
+ 22 │ x x x x x x x │ ⚡ = charging (7×13 lightning bolt)
+ 23 │ x x x x x x x │ Segments fill from right edge = % charge
+ 24 │ x x x x x x x │
+ 25 │ x x x x x x x │
+ 26 │ x x x x x x x │
+ 27 │ x x x x x x x │
+ 28 │ x x x x x x x │
+ 29 │ x x x x x x x │
+ 30 │ x x x x x x x │
+ 31 │ x x x x x x x │
+ 32 │ x x x x x x x │
+ 33 └───────────────┘
+```
+
+#### Extended Layout (9–12 physical cores)
+
+The CPU section grows from 8 to 12 cells by adding two more rows of 3×3 cells. To make room, the memory bar is compressed from 2 cols × 7 rows of usable space into the same 2 cols but shifted down, and the battery section shrinks from 13 rows to 5 rows with a compact 7×5 lightning bolt.
+
+```
+     Left LED Matrix (9×34)
+     USB Port: 1-4.2
+  0 ┌───────────────┐
+  1 │ x x x | x x x | CPU Core Usage
+  2 │ x x x | x x x | (up to 12 cores, 2×6 grid of 3×3 cells)
+  3 │ x x x | x x x | Each cell = 1 physical core
+  4 │───────|───────|
+  5 │ x x x | x x x |
+  6 │ x x x | x x x |
+  7 │ x x x | x x x |
+  8 │───────|───────|
+  9 │ x x x | x x x |
+ 10 │ x x x | x x x |
+ 11 │ x x x | x x x |
+ 12 │───────|───────|
+ 13 │ x x x | x x x |
+ 14 │ x x x | x x x |
+ 15 │ x x x | x x x |
+ 16 │───────|───────|
+ 17 │ x x x | x x x |
+ 18 │ x x x | x x x |
+ 19 │ x x x | x x x |
+ 20 │───────|───────|
+ 21 │ x x x | x x x |
+ 22 │ x x x | x x x |
+ 23 │ x x x | x x x |
+ 24 │───────────────│
+ 25 │ x x x x x x x │ Memory Usage Bar (shifted down)
+ 26 │ x x x x x x x │
+ 27 │───────────────│
+ 28 │ x x x x x x x │ Battery Level (compact 5-row section)
+ 29 │ x x x x x x x │ ⚡ = charging (7×5 compact bolt)
+ 30 │ x x x x x x x │ Segments fill from right edge = % charge
+ 31 │ x x x x x x x │
+ 32 │ x x x x x x x │
  33 └───────────────┘
 ```
 
@@ -250,11 +304,13 @@ The Framework LED matrices display real-time system metrics using a carefully de
 
 ### Visualization Details
 
-#### CPU Cores (Left Matrix, Rows 1-4)
-- **Layout**: Up to 8 vertical bars, 4 columns wide each
-- **Height**: Proportional to core usage (0-100%)
-- **Color**: Intensity increases with load
-- **Spacing**: 1-pixel gap between core bars
+#### CPU Cores (Left Matrix)
+- **Detection**: Physical cores are detected from `/sys/devices/system/cpu/cpuN/topology/core_id` and `physical_package_id`; SMT/hyperthreaded siblings are folded into their parent physical core so each cell represents one real core.
+- **Layout**: 3×3 cells arranged in 2 columns. The grid grows downward with core count:
+  - **1–8 cores (Classic)**: 2×4 grid spanning rows 1–15
+  - **9–12 cores (Extended)**: 2×6 grid spanning rows 1–23
+- **Per-cell fill**: A spiral lookup pattern fills 0–9 of the 9 sub-pixels in each 3×3 cell, proportional to that core's usage (0–100%).
+- **Layout switching**: Automatic at startup based on the detected physical core count; the choice also drives where the memory bar and battery section appear.
 
 #### Memory Usage (Left Matrix, Rows 5-6)
 - **Layout**: Horizontal bar spanning full width
