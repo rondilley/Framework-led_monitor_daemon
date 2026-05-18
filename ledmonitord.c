@@ -111,29 +111,20 @@ led_error_t find_serial_device(const char* port_location, char* device_path, siz
  *
  ****/
 void signal_handler(int sig) {
+    // Only async-signal-safe work belongs here: set flags and return. The
+    // main loop observes daemon_running / config_reload_requested. LED
+    // clearing and logging happen in the normal shutdown path via
+    // cleanup_drawing_thread(), which is safe to call from thread context.
     switch(sig) {
         case SIGTERM:
         case SIGINT:
-            LOG_INFO("Received termination signal, shutting down...");
             daemon_running = 0;
-            // Clear LEDs immediately on shutdown signal
-            if (left_thread.serial_fd >= 0) {
-                clear_leds(left_thread.serial_fd);
-            }
-            if (right_thread.serial_fd >= 0) {
-                clear_leds(right_thread.serial_fd);
-            }
             break;
         case SIGUSR1:
-            LOG_INFO("Received SIGUSR1, reloading configuration...");
-            config_reload_requested = 1;
-            break;
         case SIGHUP:
-            LOG_INFO("Received SIGHUP, reloading configuration...");
             config_reload_requested = 1;
             break;
         default:
-            LOG_WARN("Received unexpected signal: %d", sig);
             break;
     }
 }
@@ -662,8 +653,13 @@ led_error_t init_drawing_thread(DrawingThread* thread, const char* port_location
  *
  ****/
 void cleanup_drawing_thread(DrawingThread* thread) {
+    // Set running=0 and signal under the mutex so the worker can't miss the
+    // wakeup if it's between checking thread->running and entering cond_wait
+    // (lost-wakeup race that previously deadlocked pthread_join on shutdown).
+    pthread_mutex_lock(&thread->queue_mutex);
     thread->running = 0;
-    pthread_cond_signal(&thread->queue_cond);
+    pthread_cond_broadcast(&thread->queue_cond);
+    pthread_mutex_unlock(&thread->queue_mutex);
     pthread_join(thread->thread_id, NULL);
     
     if (thread->pending_grid) {
@@ -820,9 +816,10 @@ int main(int argc, char* argv[]) {
     const char* config_file = NULL;
     int foreground_mode = 0;
     int verbose_mode = 0;
+    int debug_mode = 0;
     int show_stats = 0;
     int test_devices = 0;
-    
+
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--foreground") == 0 || strcmp(argv[i], "-f") == 0) {
@@ -837,7 +834,7 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose_mode = 1;
         } else if (strcmp(argv[i], "--debug") == 0 || strcmp(argv[i], "-d") == 0) {
-            // Will be handled after config loading
+            debug_mode = 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return EXIT_SUCCESS;
@@ -870,6 +867,16 @@ int main(int argc, char* argv[]) {
     }
     if (verbose_mode) {
         verbose_logging = 1;
+        // Ensure INFO-level messages are surfaced even if config set a
+        // stricter threshold; verbose is a "show me more" knob.
+        if (global_config.log_level > LOG_LEVEL_INFO) {
+            global_config.log_level = LOG_LEVEL_INFO;
+        }
+    }
+    if (debug_mode) {
+        verbose_logging = 1;
+        global_config.enable_debug_logging = 1;
+        global_config.log_level = LOG_LEVEL_DEBUG;
     }
     
     // Handle special modes

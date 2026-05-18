@@ -26,7 +26,7 @@
 #include <syslog.h>
 #include "led_monitor.h"
 
-#define MAX_CPU_CORES 128
+#define MAX_CPU_CORES 256
 #define HISTORY_SIZE 10
 
 typedef struct {
@@ -52,8 +52,10 @@ typedef struct {
     time_t timestamp;
 } NetworkStat;
 
-static CPUStat* prev_cpu_stats = NULL;
-static int cpu_count = 0;
+static CPUStat* prev_cpu_stats = NULL;   // indexed by physical core
+static int cpu_count = 0;                 // physical core count
+static int total_logical = 0;             // total logical CPUs in /proc/stat
+static int* logical_to_physical = NULL;   // logical CPU id -> physical idx, or -1
 static float** cpu_history = NULL;
 static int* cpu_history_index = NULL;
 
@@ -62,6 +64,45 @@ static int disk_history_index = 0;
 static int disk_history_count = 0;
 static float highest_disk_read_rate = 0.00001;
 static float highest_disk_write_rate = 0.00001;
+
+// True for whole-disk device names; false for partitions and non-disk
+// entries. Replaces the old `(major == 8 || major == 259) && minor%16 == 0`
+// filter, which was a SCSI-allocation heuristic and missed NVMe namespaces
+// (major 259 doesn't follow the 16-minors-per-disk convention).
+//
+// Recognized whole-disk patterns:
+//   sd[a-z]+, vd[a-z]+, hd[a-z]+, xvd[a-z]+   (trailing char is alpha)
+//   nvme<N>n<M>                                (no "p<part>" suffix)
+//   mmcblk<N>                                  (no "p<part>" suffix)
+static int is_whole_disk(const char* name) {
+    size_t len = strlen(name);
+    if (len == 0) return 0;
+
+    if (strncmp(name, "nvme", 4) == 0) {
+        const char* p = name + 4;
+        if (!(*p >= '0' && *p <= '9')) return 0;
+        while (*p >= '0' && *p <= '9') p++;
+        if (*p != 'n') return 0;
+        p++;
+        if (!(*p >= '0' && *p <= '9')) return 0;
+        while (*p >= '0' && *p <= '9') p++;
+        return *p == '\0';
+    }
+    if (strncmp(name, "mmcblk", 6) == 0) {
+        const char* p = name + 6;
+        if (!(*p >= '0' && *p <= '9')) return 0;
+        while (*p >= '0' && *p <= '9') p++;
+        return *p == '\0';
+    }
+    if (strncmp(name, "xvd", 3) == 0 ||
+        strncmp(name, "sd",  2) == 0 ||
+        strncmp(name, "vd",  2) == 0 ||
+        strncmp(name, "hd",  2) == 0) {
+        char last = name[len - 1];
+        return !(last >= '0' && last <= '9');
+    }
+    return 0;
+}
 
 static NetworkStat network_history[20];
 static int network_history_index = 0;
@@ -102,31 +143,94 @@ static float highest_network_recv_rate = 0.00001;
  *   - Memory persists for application lifetime (static variables)
  *
  ****/
+static int read_core_id(int cpu) {
+    char path[256];
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return -1;
+    int id = -1;
+    if (fscanf(fp, "%d", &id) != 1) id = -1;
+    fclose(fp);
+    return id;
+}
+
+static int read_physical_package_id(int cpu) {
+    char path[256];
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return 0;
+    int id = 0;
+    if (fscanf(fp, "%d", &id) != 1) id = 0;
+    fclose(fp);
+    return id;
+}
+
 static void init_cpu_monitoring() {
     FILE* fp = fopen("/proc/stat", "r");
     if (!fp) return;
-    
+
     char line[256];
-    cpu_count = 0;
-    
+    total_logical = 0;
     while (fgets(line, sizeof(line), fp)) {
         if (strncmp(line, "cpu", 3) == 0 && line[3] >= '0' && line[3] <= '9') {
-            cpu_count++;
+            total_logical++;
         }
     }
     fclose(fp);
-    
-    cpu_count = cpu_count / 2;
-    
+
+    if (total_logical <= 0 || total_logical > MAX_CPU_CORES) {
+        total_logical = 0;
+        return;
+    }
+
+    logical_to_physical = calloc(total_logical, sizeof(int));
+    if (!logical_to_physical) return;
+    for (int i = 0; i < total_logical; i++) logical_to_physical[i] = -1;
+
+    // Group logical CPUs into physical cores using (package_id, core_id).
+    // The lowest-numbered logical CPU in each group represents the core.
+    int seen_pkg[MAX_CPU_CORES];
+    int seen_core[MAX_CPU_CORES];
+    int seen_count = 0;
+
+    for (int cpu = 0; cpu < total_logical; cpu++) {
+        int cid = read_core_id(cpu);
+        int pid = read_physical_package_id(cpu);
+        if (cid < 0) cid = cpu;  // Fallback: treat each logical CPU as physical.
+
+        int phys_idx = -1;
+        for (int i = 0; i < seen_count; i++) {
+            if (seen_core[i] == cid && seen_pkg[i] == pid) {
+                phys_idx = i;
+                break;
+            }
+        }
+        if (phys_idx < 0) {
+            phys_idx = seen_count;
+            seen_pkg[seen_count] = pid;
+            seen_core[seen_count] = cid;
+            seen_count++;
+            logical_to_physical[cpu] = phys_idx;
+        }
+        // Sibling threads: left as -1, so they are skipped in stats reads.
+    }
+
+    cpu_count = seen_count;
+
     if (cpu_count > 0) {
         prev_cpu_stats = calloc(cpu_count, sizeof(CPUStat));
         cpu_history = calloc(cpu_count, sizeof(float*));
         cpu_history_index = calloc(cpu_count, sizeof(int));
-        
+
         for (int i = 0; i < cpu_count; i++) {
             cpu_history[i] = calloc(HISTORY_SIZE, sizeof(float));
         }
     }
+
+    syslog(LOG_INFO, "CPU monitoring: %d logical CPUs, %d physical cores",
+           total_logical, cpu_count);
 }
 
 /****
@@ -184,19 +288,20 @@ void get_cpu_values(CPUValues* cpu) {
     }
     
     char line[256];
-    int core_idx = 0;
-    
-    while (fgets(line, sizeof(line), fp) && core_idx < cpu_count) {
+
+    while (fgets(line, sizeof(line), fp)) {
         if (strncmp(line, "cpu", 3) == 0 && line[3] >= '0' && line[3] <= '9') {
             int cpu_num = atoi(&line[3]);
-            
-            if (cpu_num % 2 == 0 && cpu_num / 2 < cpu_count) {
+
+            if (cpu_num < 0 || cpu_num >= total_logical) continue;
+            int idx = logical_to_physical[cpu_num];
+            if (idx < 0 || idx >= cpu_count) continue;
+
+            {
                 CPUStat curr;
                 sscanf(line, "cpu%*d %lu %lu %lu %lu %lu %lu %lu %lu",
                        &curr.user, &curr.nice, &curr.system, &curr.idle,
                        &curr.iowait, &curr.irq, &curr.softirq, &curr.steal);
-                
-                int idx = cpu_num / 2;
                 
                 unsigned long prev_total = prev_cpu_stats[idx].user + prev_cpu_stats[idx].nice +
                                           prev_cpu_stats[idx].system + prev_cpu_stats[idx].idle +
@@ -226,7 +331,6 @@ void get_cpu_values(CPUValues* cpu) {
                 cpu->values[idx] = sum / HISTORY_SIZE;
                 
                 prev_cpu_stats[idx] = curr;
-                core_idx++;
             }
         }
     }
@@ -419,10 +523,10 @@ void get_disk_values(DiskValues* disk) {
         char device[32];
         unsigned long long read_sectors, write_sectors;
         int major, minor;
-        
-        if (sscanf(line, "%d %d %s %*u %*u %llu %*u %*u %*u %llu",
+
+        if (sscanf(line, "%d %d %31s %*u %*u %llu %*u %*u %*u %llu",
                    &major, &minor, device, &read_sectors, &write_sectors) == 5) {
-            if ((major == 8 || major == 259) && minor % 16 == 0) {
+            if (is_whole_disk(device)) {
                 total_read_sectors += read_sectors;
                 total_write_sectors += write_sectors;
             }
@@ -434,23 +538,32 @@ void get_disk_values(DiskValues* disk) {
     current.read_bytes = total_read_sectors * 512;
     current.write_bytes = total_write_sectors * 512;
     current.timestamp = time(NULL);
-    
+
+    // Decay the adaptive "highest seen" so a one-off burst doesn't pin the
+    // scale forever. At ~10Hz, 0.9999 per call gives a half-life of ~70s.
+    // Floor avoids divide-by-tiny that would render any I/O as 100%.
+    const float DISK_RATE_FLOOR = 4096.0f;
+    highest_disk_read_rate  *= 0.9999f;
+    highest_disk_write_rate *= 0.9999f;
+    if (highest_disk_read_rate  < DISK_RATE_FLOOR) highest_disk_read_rate  = DISK_RATE_FLOOR;
+    if (highest_disk_write_rate < DISK_RATE_FLOOR) highest_disk_write_rate = DISK_RATE_FLOOR;
+
     if (disk_history_count > 0) {
         int oldest_idx = (disk_history_index - disk_history_count + 20) % 20;
         DiskStat* oldest = &disk_history[oldest_idx];
-        
+
         time_t time_diff = current.timestamp - oldest->timestamp;
         if (time_diff > 0) {
             float read_rate = (float)(current.read_bytes - oldest->read_bytes) / time_diff;
             float write_rate = (float)(current.write_bytes - oldest->write_bytes) / time_diff;
-            
+
             if (read_rate > highest_disk_read_rate) {
                 highest_disk_read_rate = read_rate;
             }
             if (write_rate > highest_disk_write_rate) {
                 highest_disk_write_rate = write_rate;
             }
-            
+
             disk->read_percent = fminf(1.0, read_rate / highest_disk_read_rate);
             disk->write_percent = fminf(1.0, write_rate / highest_disk_write_rate);
         } else {
@@ -537,23 +650,31 @@ void get_network_values(NetworkValues* net) {
     current.recv_bytes = total_recv_bytes;
     current.sent_bytes = total_sent_bytes;
     current.timestamp = time(NULL);
-    
+
+    // Same decay strategy as disk: fade the adaptive max so a single burst
+    // doesn't flatten the visualization forever.
+    const float NET_RATE_FLOOR = 4096.0f;
+    highest_network_recv_rate *= 0.9999f;
+    highest_network_sent_rate *= 0.9999f;
+    if (highest_network_recv_rate < NET_RATE_FLOOR) highest_network_recv_rate = NET_RATE_FLOOR;
+    if (highest_network_sent_rate < NET_RATE_FLOOR) highest_network_sent_rate = NET_RATE_FLOOR;
+
     if (network_history_count > 0) {
         int oldest_idx = (network_history_index - network_history_count + 20) % 20;
         NetworkStat* oldest = &network_history[oldest_idx];
-        
+
         time_t time_diff = current.timestamp - oldest->timestamp;
         if (time_diff > 0) {
             float recv_rate = (float)(current.recv_bytes - oldest->recv_bytes) / time_diff;
             float sent_rate = (float)(current.sent_bytes - oldest->sent_bytes) / time_diff;
-            
+
             if (recv_rate > highest_network_recv_rate) {
                 highest_network_recv_rate = recv_rate;
             }
             if (sent_rate > highest_network_sent_rate) {
                 highest_network_sent_rate = sent_rate;
             }
-            
+
             net->download_percent = fminf(1.0, recv_rate / highest_network_recv_rate);
             net->upload_percent = fminf(1.0, sent_rate / highest_network_sent_rate);
         } else {

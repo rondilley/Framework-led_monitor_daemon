@@ -34,16 +34,36 @@ static const int lookup_table[10][3][3] = {
     {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}}
 };
 
-// Lightning bolt pattern (transposed from Python version)
-static const int lightning_bolt[7][13] = {
-    {0,0,0,0,0,0,0,0,0,0,0,0,0}, // row 0
-    {0,0,0,0,0,1,1,0,0,0,1,1,0}, // row 1 
-    {0,0,0,0,1,1,1,0,1,1,1,0,0}, // row 2
-    {0,0,0,1,1,1,1,1,1,1,0,0,0}, // row 3
-    {0,0,1,1,1,0,1,1,1,0,0,0,0}, // row 4
-    {0,1,1,0,0,0,1,1,0,0,0,0,0}, // row 5
-    {0,0,0,0,0,0,0,0,0,0,0,0,0}  // row 6
+// Original lightning bolt (7 horizontal x 13 vertical) — used by the
+// pre-existing layout for systems with <= 8 physical cores.
+static const int lightning_bolt_classic[7][13] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,1,1,0,0,0,1,1,0},
+    {0,0,0,0,1,1,1,0,1,1,1,0,0},
+    {0,0,0,1,1,1,1,1,1,1,0,0,0},
+    {0,0,1,1,1,0,1,1,1,0,0,0,0},
+    {0,1,1,0,0,0,1,1,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0,0}
 };
+
+// Compressed lightning bolt (7 horizontal x 5 vertical) — used by the extended
+// layout for systems with > 8 cores, where the battery section was reduced
+// from 13 to 5 columns to make room for additional CPU cells.
+static const int lightning_bolt_compact[7][5] = {
+    {0,0,0,0,0},
+    {0,0,1,1,0},
+    {0,1,1,0,0},
+    {1,1,1,1,0},
+    {0,0,1,1,0},
+    {0,0,1,1,1},
+    {0,0,0,0,0}
+};
+
+// Selected by draw_cpu() based on physical core count. Other left-matrix
+// draw functions consult this to choose section positions/sizes. draw_cpu()
+// is the first left-matrix draw call each frame so the flag is current
+// before draw_memory/draw_battery/draw_borders_left run.
+static int extended_layout = 0;
 
 /****
  *
@@ -108,25 +128,38 @@ static int spiral_index(float fill_ratio) {
  *   No dynamic allocation; operates on provided grid and CPU data structures
  *
  ****/
+// Layout cap. <=8 cores -> original 2x4 box layout in rows 0..16.
+// 9..12 cores  -> extended 2x6 box layout in rows 0..24 (eats into mem/bat).
+#define CPU_SPIRAL_CLASSIC_MAX  8
+#define CPU_SPIRAL_EXTENDED_MAX 12
+
 void draw_cpu(LEDGrid* grid, CPUValues* cpu, int fill_value) {
-    if (!cpu->values || cpu->count == 0) return;
-    
-    for (int i = 0; i < cpu->count && i < 8; i++) {
-        int column_number = i % 2;
-        int row_number = i / 2;
-        
+    if (!cpu->values || cpu->count == 0) {
+        extended_layout = 0;
+        return;
+    }
+
+    // Pick layout based on physical core count. Once set, other left-matrix
+    // draw functions in this file consult `extended_layout`.
+    extended_layout = (cpu->count > CPU_SPIRAL_CLASSIC_MAX);
+
+    int total = cpu->count;
+    int cap = extended_layout ? CPU_SPIRAL_EXTENDED_MAX : CPU_SPIRAL_CLASSIC_MAX;
+    if (total > cap) total = cap;
+
+    for (int i = 0; i < total; i++) {
+        int column_number = i % 2;   // 0 = left half (grid_y 1..3), 1 = right (5..7)
+        int row_number   = i / 2;    // 0..5 = top to bottom on the matrix
+
         int idx = spiral_index(cpu->values[i]);
         const int (*fill_grid)[3] = lookup_table[idx];
-        
-        // Match Python: grid[1+column_number*4:4+column_number*4, 1+row_number*4:4+row_number*4]
-        // This means: y in [1+column_number*4, 4+column_number*4), x in [1+row_number*4, 4+row_number*4)
+
         for (int y = 0; y < 3; y++) {
             for (int x = 0; x < 3; x++) {
-                int grid_y = 1 + column_number * 4 + y;  // Swapped: column_number affects y
-                int grid_x = 1 + row_number * 4 + x;     // Swapped: row_number affects x
-                
+                int grid_y = 1 + column_number * 4 + y;   // 1..3 or 5..7
+                int grid_x = 1 + row_number * 4 + x;      // 1..3, 5..7, ..., 21..23
+
                 if (grid_x < GRID_WIDTH && grid_y < GRID_HEIGHT) {
-                    // fill_grid is already transposed in Python, so use [y][x]
                     if (fill_grid[y][x]) {
                         grid->grid[grid_y][grid_x] = fill_value;
                     }
@@ -166,24 +199,20 @@ void draw_cpu(LEDGrid* grid, CPUValues* cpu, int fill_value) {
  *
  ****/
 void draw_memory(LEDGrid* grid, MemoryValues* mem, int fill_value) {
-    // Match Python exactly:
-    // lit_pixels = 7 * 2 * memory_ratio
-    float lit_pixels = 7.0f * 2.0f * mem->usage_percent;
+    // Classic layout (<=8 cores): memory at matrix cols 17/18.
+    // Extended layout (>8 cores): memory shifted to cols 25/26.
+    int col_top    = extended_layout ? 25 : 17;
+    int col_bottom = extended_layout ? 26 : 18;
+
+    float lit_pixels  = 7.0f * 2.0f * mem->usage_percent;
     int pixels_bottom = (int)roundf(lit_pixels / 2.0f);
-    int pixels_top = (int)roundf((lit_pixels - 0.49f) / 2.0f);
-    
-    // grid[1:1+pixels_top,17] = fill_value
+    int pixels_top    = (int)roundf((lit_pixels - 0.49f) / 2.0f);
+
     for (int y = 1; y < 1 + pixels_top && y < GRID_HEIGHT; y++) {
-        if (17 < GRID_WIDTH) {
-            grid->grid[y][17] = fill_value;
-        }
+        grid->grid[y][col_top] = fill_value;
     }
-    
-    // grid[1:1+pixels_bottom,18] = fill_value  
     for (int y = 1; y < 1 + pixels_bottom && y < GRID_HEIGHT; y++) {
-        if (18 < GRID_WIDTH) {
-            grid->grid[y][18] = fill_value;
-        }
+        grid->grid[y][col_bottom] = fill_value;
     }
 }
 
@@ -218,51 +247,58 @@ void draw_memory(LEDGrid* grid, MemoryValues* mem, int fill_value) {
  *
  ****/
 void draw_battery(LEDGrid* grid, BatteryValues* bat, int fill_value) {
-    // Match Python exactly:
-    // lit_pixels = int(round(13 * 7 * battery_ratio))
-    int lit_pixels = (int)roundf(13.0f * 7.0f * bat->percent);
-    int pixels_base = lit_pixels / 7;
-    int remainder = lit_pixels % 7;
-    
-    // Battery low threshold check (simplified - no flashing in C version)
+    // Classic: battery occupies 13 vertical cols (20..32), 7 horizontal rows.
+    // Extended: battery shrinks to 5 vertical cols (28..32) so the bigger CPU
+    // section above can fit. Lightning bolt scales with the chosen layout.
+    int width      = extended_layout ? 5  : 13;
+    int start_col  = extended_layout ? 28 : 20;
+    int end_col    = start_col + width;     // exclusive (also == col index of bottom outer border = 33)
+
     if (bat->percent <= 0.07f && !bat->is_charging) {
-        return; // Skip drawing when battery very low and not charging
+        return;  // Critically low and not charging: skip drawing.
     }
-    
-    // for i in range(7): grid[i+1,33-pixels_col:33] = fill_value
+
+    int lit_pixels  = (int)roundf((float)width * 7.0f * bat->percent);
+    int pixels_base = lit_pixels / 7;
+    int remainder   = lit_pixels % 7;
+
     for (int i = 0; i < 7; i++) {
-        int pixels_col = pixels_base;
-        if (i < remainder) {
-            pixels_col += 1;
-        }
-        
-        // grid[i+1, 33-pixels_col:33] = fill_value
+        int pixels_col = pixels_base + (i < remainder ? 1 : 0);
         int row = i + 1;
-        if (row < GRID_HEIGHT) {
-            for (int x = 33 - pixels_col; x < 33 && x >= 0 && x < GRID_WIDTH; x++) {
-                grid->grid[row][x] = fill_value;
-            }
+        if (row >= GRID_HEIGHT) continue;
+        // Fill from the outer (right) edge of the section leftward, but never
+        // cross the section's left border.
+        int x_start = end_col - pixels_col;
+        if (x_start < start_col) x_start = start_col;
+        for (int x = x_start; x < end_col; x++) {
+            grid->grid[row][x] = fill_value;
         }
     }
-    
-    // Handle charging lightning bolt
+
     if (bat->is_charging) {
-        // Apply lightning bolt to grid[1:8, 20:33] region (7 rows, 13 columns)
-        // Python: grid[1:8,20:33][lightning_bolt] -= np.rint(fill_value + 10 * pulse_amount).astype(int)
-        // Simplified in C: just overlay the lightning bolt pattern
-        
-        for (int row = 0; row < 7; row++) {
-            for (int col = 0; col < 13; col++) {
-                if (lightning_bolt[row][col]) {
-                    int grid_row = 1 + row;  // grid[1:8, ...]
-                    int grid_col = 20 + col; // grid[..., 20:33]
-                    
+        if (extended_layout) {
+            for (int r = 0; r < 7; r++) {
+                for (int c = 0; c < 5; c++) {
+                    if (!lightning_bolt_compact[r][c]) continue;
+                    int grid_row = 1 + r;
+                    int grid_col = start_col + c;
                     if (grid_row < GRID_HEIGHT && grid_col < GRID_WIDTH) {
-                        // Overlay lightning bolt (make it brighter than battery fill)
-                        grid->grid[grid_row][grid_col] = fill_value + 30;
-                        if (grid->grid[grid_row][grid_col] > 255) {
-                            grid->grid[grid_row][grid_col] = 255;
-                        }
+                        int v = fill_value + 30;
+                        if (v > 255) v = 255;
+                        grid->grid[grid_row][grid_col] = v;
+                    }
+                }
+            }
+        } else {
+            for (int r = 0; r < 7; r++) {
+                for (int c = 0; c < 13; c++) {
+                    if (!lightning_bolt_classic[r][c]) continue;
+                    int grid_row = 1 + r;
+                    int grid_col = start_col + c;
+                    if (grid_row < GRID_HEIGHT && grid_col < GRID_WIDTH) {
+                        int v = fill_value + 30;
+                        if (v > 255) v = 255;
+                        grid->grid[grid_row][grid_col] = v;
                     }
                 }
             }
@@ -362,54 +398,43 @@ void draw_bar(LEDGrid* grid, float percent, int fill_value, int x_offset, int at
  *
  ****/
 void draw_borders_left(LEDGrid* grid, int value) {
-    // Match Python exactly:
-    // grid[4, :16] = border_value  (Cpu vertical partitions)
-    for (int x = 0; x < 16; x++) {
+    // Vertical center divider runs the length of the CPU section. In the
+    // classic layout it stops at row 15 (4 cell rows); in the extended
+    // layout it continues to row 23 (6 cell rows).
+    int divider_end = extended_layout ? 24 : 16;
+    for (int x = 0; x < divider_end; x++) {
         grid->grid[4][x] = value;
     }
-    
-    // grid[:, 4] = border_value    (Cpu horizontal partitions)
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][4] = value;
+
+    // Horizontal partitions:
+    //   classic:  4, 8, 12, 16 (between CPU cell rows), 19 (mem/bat border)
+    //   extended: 4, 8, 12, 16, 20 (between CPU cell rows), 24 (CPU bottom),
+    //             27 (mem/bat border)
+    if (extended_layout) {
+        static const int hborders[] = {4, 8, 12, 16, 20, 24, 27};
+        for (size_t k = 0; k < sizeof(hborders)/sizeof(hborders[0]); k++) {
+            int x = hborders[k];
+            for (int y = 0; y < GRID_HEIGHT; y++) {
+                grid->grid[y][x] = value;
+            }
+        }
+    } else {
+        static const int hborders[] = {4, 8, 12, 16, 19};
+        for (size_t k = 0; k < sizeof(hborders)/sizeof(hborders[0]); k++) {
+            int x = hborders[k];
+            for (int y = 0; y < GRID_HEIGHT; y++) {
+                grid->grid[y][x] = value;
+            }
+        }
     }
-    
-    // grid[:, 8] = border_value
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][8] = value;
-    }
-    
-    // grid[:, 12] = border_value
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][12] = value;
-    }
-    
-    // grid[:, 16] = border_value
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][16] = value;
-    }
-    
-    // grid[:, 19] = border_value   (Memory bottom partition)
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][19] = value;
-    }
-    
-    // grid[:, 0] = border_value    (Top outer edge)
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        grid->grid[y][0] = value;
-    }
-    
-    // grid[0, :] = border_value    (Left outer edge)
+
+    // Outer frame (identical in both layouts).
     for (int x = 0; x < GRID_WIDTH; x++) {
         grid->grid[0][x] = value;
-    }
-    
-    // grid[8, :] = border_value    (Right outer edge)
-    for (int x = 0; x < GRID_WIDTH; x++) {
         grid->grid[8][x] = value;
     }
-    
-    // grid[:, 33] = border_value   (Bottom outer edge)
     for (int y = 0; y < GRID_HEIGHT; y++) {
+        grid->grid[y][0]  = value;
         grid->grid[y][33] = value;
     }
 }
