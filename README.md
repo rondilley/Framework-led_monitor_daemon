@@ -498,11 +498,9 @@ Same as the original Python implementation.
 
 ## Attribution
 
-This C implementation is based on the original Python version by Jeremy Karstrom:
 - **Original Project**: https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
 - **Author**: Jeremy Karst
 - **License**: Same license as original implementation
-
 
 The core visualization algorithms, LED matrix layout, and system monitoring concepts are derived from the original Python codebase, with significant performance optimizations and enterprise features added in this C implementation.
 
