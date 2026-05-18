@@ -53,8 +53,16 @@
 #define UPDATE_INTERVAL_MS 100
 #define DEFAULT_CONFIG_FILE "/etc/led_monitor.conf"
 
+typedef enum {
+    SIDE_LEFT  = 0,
+    SIDE_RIGHT = 1
+} matrix_side_t;
+
 typedef struct {
     char port_location[32];
+    matrix_side_t side;
+    unsigned char initial_brightness;   // snapshotted at init; avoids worker
+                                        // reading global_config under reload.
     int serial_fd;
     pthread_t thread_id;
     pthread_mutex_t queue_mutex;
@@ -77,7 +85,8 @@ led_error_t daemonize(void);
 led_error_t init_serial_port(const char* port_location);
 void* drawing_thread_func(void* arg);
 void send_grid_to_thread(DrawingThread* thread, LEDGrid* grid);
-led_error_t init_drawing_thread(DrawingThread* thread, const char* port_location);
+led_error_t init_drawing_thread(DrawingThread* thread, const char* port_location,
+                                matrix_side_t side, unsigned char initial_brightness);
 void cleanup_drawing_thread(DrawingThread* thread);
 led_error_t find_serial_device(const char* port_location, char* device_path, size_t path_size);
 
@@ -470,9 +479,11 @@ void* drawing_thread_func(void* arg) {
                 
                 // Initialize the display when first connected
                 LOG_DEBUG("Initializing display for port %s", thread->port_location);
-                
-                // Set brightness to configured level
-                unsigned char brightness = (global_config.max_foreground_brightness + global_config.min_foreground_brightness) / 2;
+
+                // Use the brightness snapshot taken at thread init so the
+                // worker never reads global_config (which the main thread can
+                // mutate on SIGHUP reload).
+                unsigned char brightness = thread->initial_brightness;
                 send_command(thread->serial_fd, 0x00, &brightness, 1);
                 
                 // Turn display on 
@@ -492,12 +503,11 @@ void* drawing_thread_func(void* arg) {
             free(grid_to_draw);
             grid_to_draw = NULL;
             
-            // Update device status
-            int left_connected = (strcmp(thread->port_location, global_config.left_device_path) == 0) ? 1 : 0;
-            int right_connected = (strcmp(thread->port_location, global_config.right_device_path) == 0) ? 1 : 0;
-            if (left_connected) {
+            // Update device status using the side flag captured at thread
+            // init (cheaper and race-free vs strcmp against global_config).
+            if (thread->side == SIDE_LEFT) {
                 update_device_status(1, -1); // -1 means don't change
-            } else if (right_connected) {
+            } else {
                 update_device_status(-1, 1);
             }
         }
@@ -596,9 +606,12 @@ void send_grid_to_thread(DrawingThread* thread, LEDGrid* grid) {
  *   Cleanup required via cleanup_drawing_thread() on shutdown
  *
  ****/
-led_error_t init_drawing_thread(DrawingThread* thread, const char* port_location) {
+led_error_t init_drawing_thread(DrawingThread* thread, const char* port_location,
+                                matrix_side_t side, unsigned char initial_brightness) {
     strncpy(thread->port_location, port_location, sizeof(thread->port_location) - 1);
     thread->port_location[sizeof(thread->port_location) - 1] = '\0';
+    thread->side = side;
+    thread->initial_brightness = initial_brightness;
     thread->serial_fd = -1;
     thread->pending_grid = NULL;
     thread->running = 1;
@@ -766,7 +779,6 @@ void print_usage(const char* program_name) {
     printf("  -v, --verbose       Enable verbose logging\n");
     printf("  -d, --debug         Enable debug logging\n");
     printf("  -h, --help          Show this help message\n");
-    printf("  --stats             Show runtime statistics and exit\n");
     printf("  --test-devices      Test device detection and exit\n");
     printf("\nConfiguration file locations:\n");
     printf("  System: %s\n", DEFAULT_CONFIG_PATH);
@@ -817,7 +829,6 @@ int main(int argc, char* argv[]) {
     int foreground_mode = 0;
     int verbose_mode = 0;
     int debug_mode = 0;
-    int show_stats = 0;
     int test_devices = 0;
 
     // Parse command line arguments
@@ -838,8 +849,6 @@ int main(int argc, char* argv[]) {
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
             return EXIT_SUCCESS;
-        } else if (strcmp(argv[i], "--stats") == 0) {
-            show_stats = 1;
         } else if (strcmp(argv[i], "--test-devices") == 0) {
             test_devices = 1;
         } else {
@@ -901,26 +910,20 @@ int main(int argc, char* argv[]) {
         return EXIT_SUCCESS;
     }
     
-    // Initialize logging
-    init_logging(global_config.log_level, global_config.enable_debug_logging, !global_config.run_as_daemon);
-    
-    if (show_stats) {
-        // This would show stats from a running daemon
-        printf("Statistics display not implemented in this version\n");
-        return EXIT_SUCCESS;
-    }
-    
-    // Daemonize if requested
+    // Daemonize if requested. Logging is intentionally initialized *after*
+    // this point because daemonize() closes every fd in the process,
+    // including any syslog socket openlog() would have created. Pre-daemonize
+    // errors must use stderr directly.
     if (global_config.run_as_daemon) {
         result = daemonize();
         if (result != LED_SUCCESS) {
-            LOG_ERROR("Failed to daemonize: %s", led_error_string(result));
+            fprintf(stderr, "Failed to daemonize: %s\n", led_error_string(result));
             return EXIT_FAILURE;
         }
-        
-        // Re-initialize logging after daemonization
-        init_logging(global_config.log_level, global_config.enable_debug_logging, 0);
     }
+
+    init_logging(global_config.log_level, global_config.enable_debug_logging,
+                 !global_config.run_as_daemon);
     
     // Set up signal handlers
     signal(SIGTERM, signal_handler);
@@ -934,14 +937,22 @@ int main(int argc, char* argv[]) {
     init_statistics();
     
     
-    // Initialize drawing threads
-    result = init_drawing_thread(&left_thread, global_config.left_device_path);
+    // Initialize drawing threads. The "initial brightness" sent to each
+    // matrix on first connect is the midpoint of the configured foreground
+    // range; per-frame brightness comes from the pixel values themselves.
+    unsigned char initial_brightness =
+        (unsigned char)((global_config.max_foreground_brightness +
+                         global_config.min_foreground_brightness) / 2);
+
+    result = init_drawing_thread(&left_thread, global_config.left_device_path,
+                                 SIDE_LEFT, initial_brightness);
     if (result != LED_SUCCESS) {
         LOG_ERROR("Failed to initialize left drawing thread: %s", led_error_string(result));
         goto cleanup;
     }
-    
-    result = init_drawing_thread(&right_thread, global_config.right_device_path);
+
+    result = init_drawing_thread(&right_thread, global_config.right_device_path,
+                                 SIDE_RIGHT, initial_brightness);
     if (result != LED_SUCCESS) {
         LOG_ERROR("Failed to initialize right drawing thread: %s", led_error_string(result));
         cleanup_drawing_thread(&left_thread);
@@ -988,50 +999,23 @@ int main(int argc, char* argv[]) {
         // Draw to left LED Matrix
         LEDGrid left_grid;
         memset(&left_grid, 0, sizeof(left_grid));
-        
-        switch (global_config.viz_mode) {
-            case VIZ_MODE_SYSTEM:
-            default:
-                draw_cpu(&left_grid, &cpu_values, foreground_value);
-                draw_memory(&left_grid, &memory_values, foreground_value);
-                draw_battery(&left_grid, &battery_values, foreground_value);
-                draw_borders_left(&left_grid, background_value);
-                break;
-                
-            case VIZ_MODE_CPU_DETAILED:
-                // Enhanced CPU visualization would go here
-                draw_cpu(&left_grid, &cpu_values, foreground_value);
-                draw_borders_left(&left_grid, background_value);
-                break;
-        }
-        
+        draw_cpu(&left_grid, &cpu_values, foreground_value);
+        draw_memory(&left_grid, &memory_values, foreground_value);
+        draw_battery(&left_grid, &battery_values, foreground_value);
+        draw_borders_left(&left_grid, background_value);
         send_grid_to_thread(&left_thread, &left_grid);
-        
+
         // Draw to right LED Matrix
         get_disk_values(&disk_values);
         get_network_values(&network_values);
-        
+
         LEDGrid right_grid;
         memset(&right_grid, 0, sizeof(right_grid));
-        
-        switch (global_config.viz_mode) {
-            case VIZ_MODE_SYSTEM:
-            default:
-                draw_bar(&right_grid, disk_values.read_percent, foreground_value, 1, 0);
-                draw_bar(&right_grid, disk_values.write_percent, foreground_value, 1, 1);
-                draw_bar(&right_grid, network_values.upload_percent, foreground_value, 5, 0);
-                draw_bar(&right_grid, network_values.download_percent, foreground_value, 5, 1);
-                draw_borders_right(&right_grid, background_value);
-                break;
-                
-            case VIZ_MODE_NETWORK_DETAILED:
-                // Enhanced network visualization would go here
-                draw_bar(&right_grid, network_values.upload_percent, foreground_value, 2, 0);
-                draw_bar(&right_grid, network_values.download_percent, foreground_value, 6, 1);
-                draw_borders_right(&right_grid, background_value);
-                break;
-        }
-        
+        draw_bar(&right_grid, disk_values.read_percent,      foreground_value, 1, 0);
+        draw_bar(&right_grid, disk_values.write_percent,     foreground_value, 1, 1);
+        draw_bar(&right_grid, network_values.upload_percent, foreground_value, 5, 0);
+        draw_bar(&right_grid, network_values.download_percent, foreground_value, 5, 1);
+        draw_borders_right(&right_grid, background_value);
         send_grid_to_thread(&right_thread, &right_grid);
         
         loop_count++;

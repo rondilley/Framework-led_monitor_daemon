@@ -21,10 +21,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdint.h>
 #include <math.h>
 #include <dirent.h>
 #include <syslog.h>
 #include "led_monitor.h"
+
+// CLOCK_MONOTONIC in microseconds. Used for I/O rate timing: time(NULL)
+// only has second resolution, which loses every disk/network sample at our
+// 10Hz poll rate except the rare pair that straddles a second boundary.
+static uint64_t monotonic_usec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
 
 #define MAX_CPU_CORES 256
 #define HISTORY_SIZE 10
@@ -43,13 +53,13 @@ typedef struct {
 typedef struct {
     unsigned long long read_bytes;
     unsigned long long write_bytes;
-    time_t timestamp;
+    uint64_t timestamp_usec;
 } DiskStat;
 
 typedef struct {
     unsigned long long sent_bytes;
     unsigned long long recv_bytes;
-    time_t timestamp;
+    uint64_t timestamp_usec;
 } NetworkStat;
 
 static CPUStat* prev_cpu_stats = NULL;   // indexed by physical core
@@ -537,7 +547,7 @@ void get_disk_values(DiskValues* disk) {
     DiskStat current;
     current.read_bytes = total_read_sectors * 512;
     current.write_bytes = total_write_sectors * 512;
-    current.timestamp = time(NULL);
+    current.timestamp_usec = monotonic_usec();
 
     // Decay the adaptive "highest seen" so a one-off burst doesn't pin the
     // scale forever. At ~10Hz, 0.9999 per call gives a half-life of ~70s.
@@ -552,10 +562,10 @@ void get_disk_values(DiskValues* disk) {
         int oldest_idx = (disk_history_index - disk_history_count + 20) % 20;
         DiskStat* oldest = &disk_history[oldest_idx];
 
-        time_t time_diff = current.timestamp - oldest->timestamp;
-        if (time_diff > 0) {
-            float read_rate = (float)(current.read_bytes - oldest->read_bytes) / time_diff;
-            float write_rate = (float)(current.write_bytes - oldest->write_bytes) / time_diff;
+        uint64_t usec_diff = current.timestamp_usec - oldest->timestamp_usec;
+        if (usec_diff > 0) {
+            float read_rate  = (float)(current.read_bytes  - oldest->read_bytes)  * 1000000.0f / (float)usec_diff;
+            float write_rate = (float)(current.write_bytes - oldest->write_bytes) * 1000000.0f / (float)usec_diff;
 
             if (read_rate > highest_disk_read_rate) {
                 highest_disk_read_rate = read_rate;
@@ -649,7 +659,7 @@ void get_network_values(NetworkValues* net) {
     NetworkStat current;
     current.recv_bytes = total_recv_bytes;
     current.sent_bytes = total_sent_bytes;
-    current.timestamp = time(NULL);
+    current.timestamp_usec = monotonic_usec();
 
     // Same decay strategy as disk: fade the adaptive max so a single burst
     // doesn't flatten the visualization forever.
@@ -663,10 +673,10 @@ void get_network_values(NetworkValues* net) {
         int oldest_idx = (network_history_index - network_history_count + 20) % 20;
         NetworkStat* oldest = &network_history[oldest_idx];
 
-        time_t time_diff = current.timestamp - oldest->timestamp;
-        if (time_diff > 0) {
-            float recv_rate = (float)(current.recv_bytes - oldest->recv_bytes) / time_diff;
-            float sent_rate = (float)(current.sent_bytes - oldest->sent_bytes) / time_diff;
+        uint64_t usec_diff = current.timestamp_usec - oldest->timestamp_usec;
+        if (usec_diff > 0) {
+            float recv_rate = (float)(current.recv_bytes - oldest->recv_bytes) * 1000000.0f / (float)usec_diff;
+            float sent_rate = (float)(current.sent_bytes - oldest->sent_bytes) * 1000000.0f / (float)usec_diff;
 
             if (recv_rate > highest_network_recv_rate) {
                 highest_network_recv_rate = recv_rate;

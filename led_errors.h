@@ -29,8 +29,7 @@ typedef enum {
     LED_ERROR_CONFIG_PARSE = -6,
     LED_ERROR_SYSTEM_RESOURCE = -7,
     LED_ERROR_THREAD_CREATION = -8,
-    LED_ERROR_FILE_IO = -9,
-    LED_ERROR_DAEMON_ALREADY_RUNNING = -10
+    LED_ERROR_FILE_IO = -9
 } led_error_t;
 
 const char* led_error_string(led_error_t error);

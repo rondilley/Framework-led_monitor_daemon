@@ -69,8 +69,6 @@ const char* led_error_string(led_error_t error) {
             return "Thread creation failed";
         case LED_ERROR_FILE_IO:
             return "File I/O error";
-        case LED_ERROR_DAEMON_ALREADY_RUNNING:
-            return "Daemon is already running";
         default:
             return "Unknown error";
     }

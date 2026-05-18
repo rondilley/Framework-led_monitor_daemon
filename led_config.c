@@ -20,9 +20,41 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <pwd.h>
+#include <syslog.h>
 #include <sys/stat.h>
 #include "led_config.h"
+
+// Strict integer parser: succeeds only when the whole string is a base-10
+// integer within [lo, hi]. Replaces atoi(), which silently returned 0 for
+// garbage (e.g. "abc") and propagated negatives into unsigned brightness
+// math and the usleep() argument.
+static int parse_int_range(const char *s, int lo, int hi, int *out) {
+    if (!s || !*s) return 0;
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return 0;
+    if (v < lo || v > hi) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+// Apply parse_int_range and log a warning (keeping the existing default)
+// if the value is malformed or out of range. Called from config parsing,
+// which may run before init_logging — syslog() opens implicitly in that
+// case, which is fine for a startup warning.
+static void apply_int(const char *key, const char *value, int lo, int hi, int *field) {
+    int v;
+    if (parse_int_range(value, lo, hi, &v)) {
+        *field = v;
+    } else {
+        syslog(LOG_WARNING,
+               "config: ignoring '%s = %s' (not an integer in [%d, %d]); keeping default %d",
+               key, value, lo, hi, *field);
+    }
+}
 
 /****
  *
@@ -56,31 +88,20 @@ void init_default_config(led_config_t* config) {
     // Device paths (auto-detect by default)
     strcpy(config->left_device_path, "4.2");  // USB path, not full device
     strcpy(config->right_device_path, "3.3");
-    
+
     // Display settings
     config->min_background_brightness = 12;
     config->max_background_brightness = 35;
     config->min_foreground_brightness = 24;
     config->max_foreground_brightness = 160;
     config->update_interval_ms = 100;
-    
-    // Visualization
-    config->viz_mode = VIZ_MODE_SYSTEM;
-    
+
     // Logging
     config->log_level = LOG_LEVEL_INFO;
     config->enable_debug_logging = 0;
-    
-    // Performance
-    config->enable_adaptive_polling = 1;
-    config->cache_system_stats = 1;
-    config->max_frame_rate = 10;
-    
+
     // Runtime options
     config->run_as_daemon = 1;
-    
-    // Statistics
-    config->enable_statistics = 0;
 }
 
 /****
@@ -133,29 +154,18 @@ static led_error_t parse_config_line(led_config_t* config, const char* line) {
         strncpy(config->right_device_path, value, sizeof(config->right_device_path) - 1);
         config->right_device_path[sizeof(config->right_device_path) - 1] = '\0';
     }
-    // Display settings
+    // Display settings (all brightnesses are 0-255; update interval is
+    // bounded to avoid busy loops at 0 and absurd waits past a minute).
     else if (strcmp(key, "min_background_brightness") == 0) {
-        config->min_background_brightness = atoi(value);
+        apply_int(key, value, 0, 255, &config->min_background_brightness);
     } else if (strcmp(key, "max_background_brightness") == 0) {
-        config->max_background_brightness = atoi(value);
+        apply_int(key, value, 0, 255, &config->max_background_brightness);
     } else if (strcmp(key, "min_foreground_brightness") == 0) {
-        config->min_foreground_brightness = atoi(value);
+        apply_int(key, value, 0, 255, &config->min_foreground_brightness);
     } else if (strcmp(key, "max_foreground_brightness") == 0) {
-        config->max_foreground_brightness = atoi(value);
+        apply_int(key, value, 0, 255, &config->max_foreground_brightness);
     } else if (strcmp(key, "update_interval_ms") == 0) {
-        config->update_interval_ms = atoi(value);
-    }
-    // Visualization mode
-    else if (strcmp(key, "visualization_mode") == 0) {
-        if (strcmp(value, "system") == 0) {
-            config->viz_mode = VIZ_MODE_SYSTEM;
-        } else if (strcmp(value, "cpu_detailed") == 0) {
-            config->viz_mode = VIZ_MODE_CPU_DETAILED;
-        } else if (strcmp(value, "network_detailed") == 0) {
-            config->viz_mode = VIZ_MODE_NETWORK_DETAILED;
-        } else if (strcmp(value, "custom") == 0) {
-            config->viz_mode = VIZ_MODE_CUSTOM;
-        }
+        apply_int(key, value, 10, 60000, &config->update_interval_ms);
     }
     // Logging
     else if (strcmp(key, "log_level") == 0) {
@@ -171,20 +181,7 @@ static led_error_t parse_config_line(led_config_t* config, const char* line) {
     } else if (strcmp(key, "enable_debug_logging") == 0) {
         config->enable_debug_logging = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
     }
-    // Performance
-    else if (strcmp(key, "enable_adaptive_polling") == 0) {
-        config->enable_adaptive_polling = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-    } else if (strcmp(key, "cache_system_stats") == 0) {
-        config->cache_system_stats = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-    } else if (strcmp(key, "max_frame_rate") == 0) {
-        config->max_frame_rate = atoi(value);
-    }
-    // Runtime options - pid_file removed, no longer needed
-    // Statistics
-    else if (strcmp(key, "enable_statistics") == 0) {
-        config->enable_statistics = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-    }
-    
+
     return LED_SUCCESS;
 }
 
@@ -252,100 +249,6 @@ led_error_t load_config(led_config_t* config, const char* config_path) {
         line[strcspn(line, "\n")] = '\0';
         parse_config_line(config, line);
     }
-    
-    fclose(fp);
-    return LED_SUCCESS;
-}
-
-/****
- *
- * Save current configuration to file in human-readable format
- *
- * DESCRIPTION:
- *   Writes complete LED monitor configuration to specified file path in
- *   key-value format with comments and sections. Converts enum values to
- *   string representations and boolean values to "true"/"false". Creates
- *   well-formatted config file suitable for manual editing. All configuration
- *   parameters are written with descriptive section headers.
- *
- * PARAMETERS:
- *   config - Pointer to led_config_t structure containing values to save
- *   config_path - File path where configuration should be written
- *
- * RETURNS:
- *   LED_SUCCESS if config saved successfully
- *   LED_ERROR_FILE_IO if file cannot be opened for writing
- *
- * SIDE EFFECTS:
- *   Creates or overwrites file at specified path
- *   File I/O operations may affect system state
- *
- * SECURITY FEATURES:
- *   - File creation with default permissions (subject to umask)
- *   - Proper file handle management with explicit close
- *   - No user input directly written to file (all values from validated config)
- *
- * MEMORY MANAGEMENT:
- *   File handle automatically managed; closed before function return
- *
- ****/
-led_error_t save_config(const led_config_t* config, const char* config_path) {
-    FILE* fp = fopen(config_path, "w");
-    if (!fp) {
-        return LED_ERROR_FILE_IO;
-    }
-    
-    fprintf(fp, "# LED Monitor Configuration File\n");
-    fprintf(fp, "# Auto-generated configuration\n\n");
-    
-    fprintf(fp, "# Device configuration\n");
-    fprintf(fp, "left_device = %s\n", config->left_device_path);
-    fprintf(fp, "right_device = %s\n", config->right_device_path);
-    fprintf(fp, "\n");
-    
-    fprintf(fp, "# Display settings\n");
-    fprintf(fp, "min_background_brightness = %d\n", config->min_background_brightness);
-    fprintf(fp, "max_background_brightness = %d\n", config->max_background_brightness);
-    fprintf(fp, "min_foreground_brightness = %d\n", config->min_foreground_brightness);
-    fprintf(fp, "max_foreground_brightness = %d\n", config->max_foreground_brightness);
-    fprintf(fp, "update_interval_ms = %d\n", config->update_interval_ms);
-    fprintf(fp, "\n");
-    
-    fprintf(fp, "# Visualization mode\n");
-    const char* viz_mode_str;
-    switch (config->viz_mode) {
-        case VIZ_MODE_SYSTEM: viz_mode_str = "system"; break;
-        case VIZ_MODE_CPU_DETAILED: viz_mode_str = "cpu_detailed"; break;
-        case VIZ_MODE_NETWORK_DETAILED: viz_mode_str = "network_detailed"; break;
-        case VIZ_MODE_CUSTOM: viz_mode_str = "custom"; break;
-        default: viz_mode_str = "system"; break;
-    }
-    fprintf(fp, "visualization_mode = %s\n", viz_mode_str);
-    fprintf(fp, "\n");
-    
-    fprintf(fp, "# Logging\n");
-    const char* log_level_str;
-    switch (config->log_level) {
-        case LOG_LEVEL_DEBUG: log_level_str = "debug"; break;
-        case LOG_LEVEL_INFO: log_level_str = "info"; break;
-        case LOG_LEVEL_WARN: log_level_str = "warn"; break;
-        case LOG_LEVEL_ERROR: log_level_str = "error"; break;
-        default: log_level_str = "info"; break;
-    }
-    fprintf(fp, "log_level = %s\n", log_level_str);
-    fprintf(fp, "enable_debug_logging = %s\n", config->enable_debug_logging ? "true" : "false");
-    fprintf(fp, "\n");
-    
-    fprintf(fp, "# Performance\n");
-    fprintf(fp, "enable_adaptive_polling = %s\n", config->enable_adaptive_polling ? "true" : "false");
-    fprintf(fp, "cache_system_stats = %s\n", config->cache_system_stats ? "true" : "false");
-    fprintf(fp, "max_frame_rate = %d\n", config->max_frame_rate);
-    fprintf(fp, "\n");
-    
-    fprintf(fp, "# Runtime options\n");
-    
-    fprintf(fp, "# Statistics\n");
-    fprintf(fp, "enable_statistics = %s\n", config->enable_statistics ? "true" : "false");
     
     fclose(fp);
     return LED_SUCCESS;

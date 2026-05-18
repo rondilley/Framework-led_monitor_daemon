@@ -15,16 +15,13 @@ https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
   - Disk I/O (read/write)
   - Network traffic (upload/download)
 - **Adaptive brightness** based on laptop display brightness
-- **Automatic device detection** via USB path
+- **Automatic device detection** via USB path (`/dev/serial/by-path` then `/dev/serial/by-id` fallback)
 - **Low resource usage** compared to Python version
-- **Configuration management** with INI-style config files
-- **Enhanced logging system** with multiple levels and debug support
-- **Runtime statistics** and performance monitoring
+- **Plain `key = value` configuration files** (system-wide and per-user)
+- **Multi-level logging** (debug / info / warn / error) routed to syslog, plus stderr in foreground mode
 - **Signal-based configuration reload** (SIGUSR1, SIGHUP)
-- **Comprehensive error handling** with specific error codes
-- **Security enhancements** with input validation
-- **Device testing tools** and status monitoring
-- **Systemd integration** with security hardening
+- **Device detection self-test** (`--test-devices`)
+- **Systemd service unit** for boot-time startup
 
 ## Requirements
 
@@ -89,21 +86,22 @@ sudo systemctl start led-monitor
 sudo systemctl status led-monitor
 ```
 
-### Important Note on Systemd Security
-The service file has minimal security restrictions due to requirements of the daemon's double-fork daemonization process. The daemon runs as the `framework` user in the `dialout` group to maintain USB device access permissions.
+### Note on Systemd Hardening
+The shipped unit uses `Type=forking` (the daemon double-forks itself) and runs as `User=framework`, `Group=dialout` so the worker threads can open `/dev/ttyACM*`. The unit currently sets only a few resource limits (`LimitNOFILE`, `MemoryMax`, `CPUQuota`) and does **not** enable directives such as `NoNewPrivileges`, `ProtectSystem`, `ProtectHome`, `PrivateTmp`, or `SystemCallFilter`. If you want a tighter sandbox, add those directives to `led-monitor.service` and verify the daemon still starts (the double-fork can interact badly with some hardening flags).
 
 ### Configuration
-```bash
-# Create system configuration (optional)
-sudo mkdir -p /etc
-sudo cp led_monitor.conf.example /etc/led_monitor.conf
-sudo editor /etc/led_monitor.conf
 
-# Create user configuration (optional)
-mkdir -p ~/.config
-cp led_monitor.conf.example ~/.config/led_monitor.conf
-editor ~/.config/led_monitor.conf
+No config file is required — the daemon uses built-in defaults if neither config file exists. To override, create one of:
+
+```bash
+# System-wide
+sudo $EDITOR /etc/led_monitor.conf
+
+# Per-user (takes effect only if the system-wide file is absent)
+mkdir -p ~/.config && $EDITOR ~/.config/led_monitor.conf
 ```
+
+See [Configuration Options](#configuration-options) below for recognized keys.
 
 ## Usage
 
@@ -312,41 +310,40 @@ The CPU section grows from 8 to 12 cells by adding two more rows of 3×3 cells. 
 - **Per-cell fill**: A spiral lookup pattern fills 0–9 of the 9 sub-pixels in each 3×3 cell, proportional to that core's usage (0–100%).
 - **Layout switching**: Automatic at startup based on the detected physical core count; the choice also drives where the memory bar and battery section appear.
 
-#### Memory Usage (Left Matrix, Rows 5-6)
-- **Layout**: Horizontal bar spanning full width
-- **Length**: Proportional to RAM usage (0-100%)
-- **Visual**: Solid fill from left to right
-- **Threshold**: Different intensities for different usage levels
+#### Memory Usage (Left Matrix)
+- **Layout**: Two narrow vertical columns in the strip between the CPU section and the battery section (cols 17–18 classic, cols 25–26 extended).
+- **Fill**: Each column fills upward from row 1; the two columns fill in lock-step with a half-pixel offset so the apparent height interpolates between LED rows.
+- **Scale**: Proportional to (1 − MemAvailable / MemTotal) read from `/proc/meminfo`.
 
-#### Battery Status (Left Matrix, Rows 7-9)
-- **Layout**: Segmented horizontal display
-- **Segments**: 6 blocks representing charge level
-- **Charging**: Lightning bolt animation when charging
-- **States**: Different patterns for charging/discharging
+#### Battery Status (Left Matrix)
+- **Layout**: Block of 7 rows by 13 cols (classic) or 7 rows by 5 cols (extended).
+- **Fill**: Cells fill from the right edge leftward across each of the 7 rows; total lit cells is proportional to the battery percentage reported by `/sys/class/power_supply/BAT*/capacity`.
+- **Charging overlay**: When `status` reads `Charging`, a lightning-bolt pattern is overlaid at +30 brightness (clamped to 255). Two bolt sizes exist: 7×13 for the classic layout, compact 7×5 for the extended layout.
+- **Low-battery safety**: If battery is ≤7% and not charging, the section is drawn empty so the section reads as "critical" rather than as a normal low reading.
 
-#### Disk Activity (Right Matrix, Columns 1-3)
-- **Read Activity**: Top half (rows 1-4)
-- **Write Activity**: Bottom half (rows 5-7)
-- **Visualization**: Vertical bars showing I/O intensity
-- **Real-time**: Updates based on actual disk throughput
+#### Disk Activity (Right Matrix)
+- **Read**: Bar from the left edge growing rightward, top-section rows 1–3.
+- **Write**: Bar from the right edge growing leftward, top-section rows 1–3 (mirror of read).
+- **Source**: Sum of read/write sectors for whole-disk devices from `/proc/diskstats` (`sd*`, `vd*`, `hd*`, `xvd*`, `nvme*n*`, `mmcblk*`; partitions excluded).
+- **Scale**: Adaptive — tracks the rolling-high observed rate with exponential decay (~70 s half-life) so a one-time burst no longer pegs the scale forever.
 
-#### Network Activity (Right Matrix, Columns 5-7)
-- **Upload**: Bottom section (rows 8-9)
-- **Download**: Top section (rows 1-7)
-- **Visualization**: Vertical bars showing network throughput
-- **Scale**: Adaptive based on connection speed
+#### Network Activity (Right Matrix)
+- **Upload**: Bar from the left edge growing rightward, bottom-section rows 5–7.
+- **Download**: Bar from the right edge growing leftward, bottom-section rows 5–7.
+- **Source**: Sum of TX/RX bytes for all non-loopback interfaces from `/proc/net/dev`.
+- **Scale**: Same adaptive decay as disk.
 
 ### Visual Encoding
 
 #### Brightness Levels
-- **Background**: Dim baseline (configurable 10-100)
-- **Foreground**: Active elements (configurable 50-255)
-- **Adaptive**: Scales with laptop display brightness
+- **Background** (borders/dividers): defaults `min=12 / max=35`, configurable (0–255)
+- **Foreground** (data pixels): defaults `min=24 / max=160`, configurable (0–255)
+- **Adaptive**: Each frame, `screen_brightness` (read from `/sys/class/backlight/`) interpolates between the min and max values, so the matrix dims with the laptop display.
 
 #### Update Behavior
-- **Smooth**: Gradual changes to avoid flickering
-- **Responsive**: 100ms update cycle for real-time feel
-- **Efficient**: Only changed pixels are updated
+- **Cycle**: 100 ms by default (`update_interval_ms`)
+- **Frame delivery**: Each frame the main thread builds two `LEDGrid`s and hands them off to per-matrix worker threads via a single-slot mailbox; if a worker is still busy when a new frame arrives, the old pending frame is dropped (newest-wins).
+- **Transmit**: Each frame writes 9 `StageCol` rows plus one `FlushCols` over USB CDC-ACM at 115200 baud.
 
 #### Border Elements
 - **Left Matrix**: Decorative borders around sections
@@ -356,42 +353,41 @@ The CPU section grows from 8 to 12 cells by adding two more rows of 3×3 cells. 
 ## Architecture
 
 The daemon uses a multi-threaded design:
-- **Main thread**: Collects system metrics and prepares LED grids
-- **Drawing threads** (2): One per LED matrix, handles serial communication
-- **Queue-based communication**: Thread-safe grid updates
+- **Main thread**: Reads `/proc` and `/sys`, builds the two `LEDGrid`s, sleeps for `update_interval_ms`, repeats.
+- **Drawing threads** (2): One per LED matrix. Each owns its serial fd, opens it lazily on first frame, and re-opens after communication failure.
+- **Hand-off**: A single-slot mailbox per worker, guarded by a mutex and condvar. If the worker is still draining the previous frame when a new one arrives, the new frame overwrites the pending one (newest-wins drop policy) and the dropped frame is counted in stats.
+- **Shutdown**: SIGTERM/SIGINT set a flag; the main loop exits and `cleanup_drawing_thread()` clears each matrix and joins the worker.
 
 ## Configuration
 
-The enhanced daemon supports comprehensive configuration through INI-style files:
+The daemon reads a plain text `key = value` file (one setting per line; `#` starts a comment; unrecognized keys are silently ignored).
 
 ### Configuration File Locations (searched in order)
 1. `/etc/led_monitor.conf` (system-wide)
-2. `~/.config/led_monitor.conf` (user-specific)
+2. `~/.config/led_monitor.conf` (user-specific — only consulted if the system file is missing)
 3. Command-line specified config (`--config FILE`)
 
 ### Configuration Options
-```ini
-[display]
-visualization_mode = system
+
+Recognized keys (everything else is ignored):
+
+```
+# Device USB-path fragments (matched against /dev/serial/by-path/*)
+left_device  = 4.2
+right_device = 3.3
+
+# Display brightness range (0–255); actual value scales with laptop backlight
+min_background_brightness = 12
+max_background_brightness = 35
+min_foreground_brightness = 24
+max_foreground_brightness = 160
+
+# Main-loop tick in milliseconds (default 100 = 10 Hz)
 update_interval_ms = 100
-max_foreground_brightness = 255
-min_foreground_brightness = 50
-max_background_brightness = 100
-min_background_brightness = 10
 
-[devices]
-left_device_path = 1-4.2
-right_device_path = 1-3.3
-
-[daemon]
-run_as_daemon = true
-
-[logging]
-log_level = info
-enable_debug_logging = false
-
-[statistics]
-enable_statistics = true
+# Logging
+log_level            = info    # debug | info | warn | error
+enable_debug_logging = false   # true | false | 1 | 0
 ```
 
 ### Runtime Configuration Reload
@@ -425,14 +421,11 @@ sudo systemctl reload led-monitor
 | Memory Usage | ~3-6 MB | ~30-50 MB |
 | CPU Usage | <1% | 2-5% |
 | Startup Time | <200ms | ~2s |
-| Dependencies | System libraries only | Python, numpy, psutil, pyserial |
-| Configuration | INI files | Python config |
-| Runtime Reload | Signal-based | No |
-| Error Handling | Comprehensive | Good |
-| Logging | Multi-level | Python logging |
-| Statistics | Built-in | No |
-| Security | Hardened | Basic |
-| Maintainability | Moderate | Higher |
+| Dependencies | libc + pthread + libm | Python, numpy, psutil, pyserial |
+| Configuration | Flat `key = value` file | Python config |
+| Runtime Reload | Signal-based (SIGHUP/SIGUSR1) | No |
+| Logging | syslog with level filtering | Python `logging` |
+| Maintainability | Lower (C) | Higher (Python) |
 
 ## Troubleshooting
 
@@ -475,26 +468,28 @@ sudo ./ledmonitord --foreground --debug
 
 ### Configuration Issues
 ```bash
-# Validate configuration file
-# Daemon will report config errors at startup
-
 # Reload configuration without restart
 sudo systemctl reload led-monitor
 
-# Check current log level
+# Show effective log level (the daemon logs this each time set_log_level runs)
 sudo journalctl -u led-monitor -f | grep "Log level"
 ```
 
-### Performance Issues
+Note: unrecognized keys in the config file are silently ignored. To verify a setting is being applied, start the daemon in foreground with `--debug`:
+
 ```bash
-# Monitor daemon performance
-# Daemon provides built-in statistics
+sudo /usr/local/bin/ledmonitord --foreground --debug --config /etc/led_monitor.conf
+```
 
-# Check frame rates and timing
-sudo journalctl -u led-monitor | grep "Frame time"
+### Frame / Device Diagnostics
+The daemon writes detailed log lines only with `--verbose` or `--debug`:
 
-# View device connection status
-sudo journalctl -u led-monitor | grep "device"
+```bash
+# Per-frame pixel count (every 50 frames, verbose mode)
+sudo journalctl -u led-monitor | grep "Drawing grid"
+
+# Device reconnection events
+sudo journalctl -u led-monitor | grep "reconnected"
 ```
 
 ## License
@@ -505,7 +500,7 @@ Same as the original Python implementation.
 
 This C implementation is based on the original Python version by Jeremy Karstrom:
 - **Original Project**: https://code.karsttech.com/jeremy/FW_LED_System_Monitor.git
-- **Author**: Jeremy Karstrom
+- **Author**: Jeremy Karst
 - **License**: Same license as original implementation
 
 

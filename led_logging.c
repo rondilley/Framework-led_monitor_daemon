@@ -256,32 +256,3 @@ void set_log_level(log_level_t level) {
     LOG_INFO("Log level changed to %s", get_level_string(level));
 }
 
-/****
- *
- * Retrieves the current minimum log level threshold
- *
- * DESCRIPTION:
- *   Returns the currently configured log level that determines which
- *   messages are processed and output. Used for querying the current
- *   logging configuration state.
- *
- * PARAMETERS:
- *   None
- *
- * RETURNS:
- *   Current log level enumeration value
- *
- * SIDE EFFECTS:
- *   None
- *
- * SECURITY FEATURES:
- *   - Read-only access to configuration state
- *   - No input validation required
- *
- * MEMORY MANAGEMENT:
- *   No memory operations - simple value return
- *
- ****/
-log_level_t get_log_level(void) {
-    return current_log_level;
-}

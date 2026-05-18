@@ -49,6 +49,5 @@ void led_log(log_level_t level, const char* file, int line, const char* fmt, ...
 
 // Runtime log level adjustment
 void set_log_level(log_level_t level);
-log_level_t get_log_level(void);
 
 #endif // LED_LOGGING_H
